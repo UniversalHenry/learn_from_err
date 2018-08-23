@@ -155,7 +155,7 @@ for epoch=start+1:opts.numEpochs
   params.getBatch = getBatch ;
   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   %get params.alpha
-  if isfield(alpha) && (params.epoch >= ourepoch)
+  if isfield(params,'alpha') && (params.epoch >= ourepoch)
       tmp_alpha = zeros(numel(params.train)+numel(params.val));
       tmp_alpha([alpha.talpha.pos,alpha.valpha.pos]) = 1;
       params.alpha = tmp_alpha;
@@ -165,8 +165,8 @@ for epoch=start+1:opts.numEpochs
   alpha = [];
   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   if numel(params.gpus) <= 1
-    [net, state ,alpha.talpha] = processEpoch(net, state, params, 'train') ;
-    [net, state ,alpha.valpha] = processEpoch(net, state, params, 'val') ;
+    [net, state ,alpha.talpha] = processEpoch(net, state, params, 'train',ourepoch) ;
+    [net, state ,alpha.valpha] = processEpoch(net, state, params, 'val', ourepoch) ;
     if ~evaluateMode
       saveState(modelPath(epoch), net, state) ;
       saveAlpha(modelPath(epoch), alpha);
@@ -259,7 +259,7 @@ function err = error_none(params, labels, res)
 err = zeros(0,1) ;
 
 % -------------------------------------------------------------------------
-function [net, state, alpha] = processEpoch(net, state, params, mode)
+function [net, state, alpha] = processEpoch(net, state, params, mode, ourepoch)
 % -------------------------------------------------------------------------
 % Note that net is not strictly needed as an output argument as net
 % is a handle class. However, this fixes some aliasing issue in the
@@ -637,7 +637,7 @@ function saveAlpha(fileName ,alpha)
 save(fileName,'alpha');
 
 % -------------------------------------------------------------------------
-function [net, state, stats] = loadState(fileName)
+function [net, state, stats, alpha] = loadState(fileName)
 % -------------------------------------------------------------------------
 load(fileName, 'net', 'state', 'stats', 'alpha') ;
 net = vl_simplenn_tidy(net) ;
