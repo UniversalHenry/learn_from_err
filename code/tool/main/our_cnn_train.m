@@ -125,14 +125,16 @@ stats = [] ;
 modelPath = @(ep) fullfile(opts.expDir, sprintf('net-epoch-%d.mat', ep));
 modelFigPath = fullfile(opts.expDir, 'net-train.pdf') ;
 
+ourepoch = 10; %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% start split by alpha
+
 start = opts.continue * findLastCheckpoint(opts.expDir) ;
 if start >= 1
   fprintf('%s: resuming by loading epoch %d\n', mfilename, start) ;
-  [net, state, stats] = loadState(modelPath(start)) ;
+  [net, state, stats, alpha] = loadState(modelPath(start)) ;
 else
   state = [] ;
+  alpha = [] ; %%
 end
-ourepoch = 10;
 for epoch=start+1:opts.numEpochs
 
   % Set the random seed based on the epoch and opts.randomSeed.
@@ -149,26 +151,34 @@ for epoch=start+1:opts.numEpochs
   params.train = opts.train(randperm(numel(opts.train))) ; % shuffle
   params.train = params.train(1:min(opts.epochSize, numel(opts.train)));
   params.val = opts.val(randperm(numel(opts.val))) ;
-  if (epoch<=ourepoch)
   params.imdb = imdb ;
-  else
-  params.imdb = load('mat/cub200/newimdb.mat');
-  end
   params.getBatch = getBatch ;
- 
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  %get params.alpha
+  if isfield(alpha) && (params.epoch >= ourepoch)
+      tmp_alpha = zeros(numel(params.train)+numel(params.val));
+      tmp_alpha([alpha.talpha.pos,alpha.valpha.pos]) = 1;
+      params.alpha = tmp_alpha;
+  else
+      params.alpha = ones(numel(params.train)+numel(params.val));
+  end
+  alpha = [];
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   if numel(params.gpus) <= 1
-    [net, state] = processEpoch(net, state, params, 'train') ;
-    [net, state] = processEpoch(net, state, params, 'val') ;
+    [net, state ,alpha.talpha] = processEpoch(net, state, params, 'train') ;
+    [net, state ,alpha.valpha] = processEpoch(net, state, params, 'val') ;
     if ~evaluateMode
       saveState(modelPath(epoch), net, state) ;
+      saveAlpha(modelPath(epoch), alpha);
     end
     lastStats = state.stats ;
   else
     spmd
-      [net, state] = processEpoch(net, state, params, 'train') ;
-      [net, state] = processEpoch(net, state, params, 'val') ;
+      [net, state ,alpha.talpha] = processEpoch(net, state, params, 'train') ;
+      [net, state ,alpha.valpha] = processEpoch(net, state, params, 'val') ;
       if labindex == 1 && ~evaluateMode
         saveState(modelPath(epoch), net, state) ;
+        saveAlpha(modelPath(epoch), alpha);
       end
       lastStats = state.stats ;
     end
@@ -249,7 +259,7 @@ function err = error_none(params, labels, res)
 err = zeros(0,1) ;
 
 % -------------------------------------------------------------------------
-function [net, state] = processEpoch(net, state, params, mode)
+function [net, state, alpha] = processEpoch(net, state, params, mode)
 % -------------------------------------------------------------------------
 % Note that net is not strictly needed as an output argument as net
 % is a handle class. However, this fixes some aliasing issue in the
@@ -303,11 +313,12 @@ stats.time = 0 ;
 adjustTime = 0 ;
 res = [] ;
 error = [] ;
+%%%%%%%%%%
 negtrain=[];
 postrain=[];
 negval=[];
 posval=[];
-ourepoch=10;
+%%%%%%%%%%
 if(size(params.imdb.images.labels,1)>1)
     density=mean(params.imdb.images.labels>0,2);
 else
@@ -354,9 +365,9 @@ for t=1:params.batchSize:numel(subset)
     net.layers{end}.class = labels ;
     net.layers{end}.iter=params.epoch;
     net.layers{end}.density=density;
-    % get alpha
-    alpha = gpuArray(params.imdb.images.alpha(batch));
-    res=our_vl_simplenn(net, im, dzdy, res , alpha ,...
+    % get alpha for batch
+    batchalpha = gpuArray(params.alpha(batch));
+    res=our_vl_simplenn(net, im, dzdy, res , batchalpha ,...
                       'accumulate', s ~= 1, ...
                       'mode', evalMode, ...
                       'conserveMemory', params.conserveMemory, ...
@@ -365,15 +376,16 @@ for t=1:params.batchSize:numel(subset)
                       'cudnn', params.cudnn, ...
                       'parameterServer', parserv, ...
                       'holdOn', s < params.numSubBatches) ;
- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
- if(params.epoch==ourepoch)
- if strcmp(mode, 'train')
- [negtrain,postrain] = parttrain(negtrain,postrain,t,params,mode,batchSize,res,labels);
- else
- [negval,posval] = partval(negval,posval,t,params,mode,batchSize,res,labels);
- end
- end
- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+     % get neg and pos sample in batch
+     if(params.epoch>=ourepoch)
+         if strcmp(mode, 'train')
+             [negtrain,postrain] = parttrain(negtrain,postrain,t,params,mode,batchSize,res,labels);
+         else
+             [negval,posval] = partval(negval,posval,t,params,mode,batchSize,res,labels);
+         end
+     end
+     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     % accumulate errors
     error = sum([error, [...
       sum(double(gather(res(end).x))) ;
@@ -437,17 +449,16 @@ for t=1:params.batchSize:numel(subset)
   end
 end
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-  if (params.epoch==ourepoch)&&(strcmp(mode, 'train'))
-  save negtrain negtrain;
-  save postrain postrain;
-  end
-  if(params.epoch==ourepoch)&&(strcmp(mode, 'val'))
-  imdb=load('mat/cub200/imdb.mat');
-  imdb=changealpha(imdb,negval,posval);
-  save('mat/cub200/newimdb.mat','-struct','imdb');
-%  clear imdb;
-  end
-% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% save neg and pos sample of an epoch
+if (strcmp(mode, 'train'))
+    alpha.pos = postrain;
+    alpha.neg = negtrain;
+end
+if (strcmp(mode, 'val'))
+    alpha.pos = posval;
+    alpha.neg = negval;
+end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Save back to state.
 state.stats.(mode) = stats ;
 if params.profile
@@ -608,26 +619,27 @@ end
 
 % -------------------------------------------------------------------------
 function saveState(fileName, net, state)
-%if((fileName(end-4)=='5')||(fileName(end-4)=='0'))
 % -------------------------------------------------------------------------
 save(fileName, 'net', 'state') ;
-%end
 
 % -------------------------------------------------------------------------
 function saveStats(fileName, stats)
-%if((fileName(end-4)=='5')||(fileName(end-4)=='0'))
 % -------------------------------------------------------------------------
 if exist(fileName)
   save(fileName, 'stats', '-append') ;
 else
   save(fileName, 'stats') ;
 end
-%end
+
+% -------------------------------------------------------------------------
+function saveAlpha(fileName ,alpha)
+% -------------------------------------------------------------------------
+save(fileName,'alpha');
 
 % -------------------------------------------------------------------------
 function [net, state, stats] = loadState(fileName)
 % -------------------------------------------------------------------------
-load(fileName, 'net', 'state', 'stats') ;
+load(fileName, 'net', 'state', 'stats', 'alpha') ;
 net = vl_simplenn_tidy(net) ;
 if isempty(whos('stats'))
   error('Epoch ''%s'' was only partially saved. Delete this file and try again.', ...
