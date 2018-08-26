@@ -133,7 +133,6 @@ if start >= 1
   [net, state, stats, alpha] = loadState(modelPath(start)) ;
 else
   state = [] ;
-  alpha = [] ; %%
 end
 for epoch=start+1:opts.numEpochs
 
@@ -155,28 +154,27 @@ for epoch=start+1:opts.numEpochs
   params.getBatch = getBatch ;
   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   %get params.alpha
+  params.alpha = ones(numel(params.train)+numel(params.val));
   if isfield(params,'alpha') && (params.epoch >= ourepoch)
       tmp_alpha = zeros(numel(params.train)+numel(params.val));
       tmp_alpha([alpha.talpha.pos,alpha.valpha.pos]) = 1;
       params.alpha = tmp_alpha;
-  else
-      params.alpha = ones(numel(params.train)+numel(params.val));
   end
   alpha = [];
   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   if numel(params.gpus) <= 1
-    [net, state ,alpha.talpha] = processEpoch(net, state, params, 'train',ourepoch) ;
-    [net, state ,alpha.valpha] = processEpoch(net, state, params, 'val', ourepoch) ;
-    if ~evaluateMode
+    [net, state ,alpha.talpha] = processEpoch(net, state, params, 'train',ourepoch) ;%%
+    [net, state ,alpha.valpha] = processEpoch(net, state, params, 'val', ourepoch) ;%%
+    if ~evaluateMode && mod(epoch,5) == 0 
       saveState(modelPath(epoch), net, state) ;
-      saveAlpha(modelPath(epoch), alpha);
+      saveAlpha(modelPath(epoch), alpha);%%
     end
     lastStats = state.stats ;
   else
     spmd
       [net, state ,alpha.talpha] = processEpoch(net, state, params, 'train') ;
       [net, state ,alpha.valpha] = processEpoch(net, state, params, 'val') ;
-      if labindex == 1 && ~evaluateMode
+      if labindex == 1 && ~evaluateMode && mod(epoch,5) == 0 
         saveState(modelPath(epoch), net, state) ;
         saveAlpha(modelPath(epoch), alpha);
       end
@@ -188,7 +186,7 @@ for epoch=start+1:opts.numEpochs
   stats.train(epoch) = lastStats.train ;
   stats.val(epoch) = lastStats.val ;
   clear lastStats ;
-  if ~evaluateMode
+  if ~evaluateMode && mod(epoch,5) == 0 
     saveStats(modelPath(epoch), stats) ;
   end
 
@@ -634,7 +632,11 @@ end
 % -------------------------------------------------------------------------
 function saveAlpha(fileName ,alpha)
 % -------------------------------------------------------------------------
-save(fileName,'alpha');
+if exist(fileName)
+  save(fileName, 'alpha', '-append') ;
+else
+  save(fileName, 'alpha') ;
+end
 
 % -------------------------------------------------------------------------
 function [net, state, stats, alpha] = loadState(fileName)

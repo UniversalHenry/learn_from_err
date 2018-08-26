@@ -22,7 +22,7 @@ opts.whitenData=true;
 opts.contrastNormalization=true;
 opts.networkType='simplenn';
 try
-    gpuID=1;
+    gpuID=4;
     gpuDevice(gpuID);
     opts.train=struct('gpus',gpuID);
 catch
