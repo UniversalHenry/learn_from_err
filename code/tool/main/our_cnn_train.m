@@ -54,7 +54,7 @@ opts.backPropDepth = +inf ;
 opts.sync = false ;
 opts.cudnn = true ;
 
-opts.errorFunction ='multiclass';
+opts.errorFunction ='CelebA_multiclass';
 
 if strcmp(net.layers{end}.type,'ourloss_softmaxlog')
     opts.errorFunction ='multiclass';
@@ -110,6 +110,9 @@ if isstr(opts.errorFunction)
     case 'binary'
       opts.errorFunction = @error_binary ;
       if isempty(opts.errorLabels), opts.errorLabels = {'binerr'} ; end
+    case 'CelebA_multiclass'
+      opts.errorFunction = @error_CelebA_multiclass ;
+      if isempty(opts.errorLabels), opts.errorLabels = {'CelebA_error'} ; end
     otherwise
       error('Unknown error function ''%s''.', opts.errorFunction) ;
   end
@@ -124,16 +127,15 @@ stats = [] ;
 
 modelPath = @(ep) fullfile(opts.expDir, sprintf('net-epoch-%d.mat', ep));
 modelFigPath = fullfile(opts.expDir, 'net-train.pdf') ;
-
-ourepoch = 10; %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% start split by alpha
-
+ourepoch = 100; %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% start split by alpha
 start = opts.continue * findLastCheckpoint(opts.expDir) ;
 if start >= 1
   fprintf('%s: resuming by loading epoch %d\n', mfilename, start) ;
-  [net, state, stats, alpha] = loadState(modelPath(start)) ;
+  [net, state, stats ,alpha] = loadState(modelPath(start)) ;
 else
   state = [] ;
 end
+
 for epoch=start+1:opts.numEpochs
 
   % Set the random seed based on the epoch and opts.randomSeed.
@@ -152,6 +154,7 @@ for epoch=start+1:opts.numEpochs
   params.val = opts.val(randperm(numel(opts.val))) ;
   params.imdb = imdb ;
   params.getBatch = getBatch ;
+
   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   %get params.alpha
   params.alpha = ones(numel(params.train)+numel(params.val));
@@ -162,19 +165,20 @@ for epoch=start+1:opts.numEpochs
   end
   alpha = [];
   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
   if numel(params.gpus) <= 1
-    [net, state ,alpha.talpha] = processEpoch(net, state, params, 'train',ourepoch) ;%%
-    [net, state ,alpha.valpha] = processEpoch(net, state, params, 'val', ourepoch) ;%%
-    if ~evaluateMode && mod(epoch,5) == 0 
+    [net, state,alpha.talpha] = processEpoch(net, state, params, 'train') ;%%
+    [net, state,alpha.valpha] = processEpoch(net, state, params, 'val') ;%%
+    if ~evaluateMode && mod(epoch,5) == 0
       saveState(modelPath(epoch), net, state) ;
       saveAlpha(modelPath(epoch), alpha);%%
     end
     lastStats = state.stats ;
   else
     spmd
-      [net, state ,alpha.talpha] = processEpoch(net, state, params, 'train') ;
-      [net, state ,alpha.valpha] = processEpoch(net, state, params, 'val') ;
-      if labindex == 1 && ~evaluateMode && mod(epoch,5) == 0 
+      [net, state,alpha.talpha] = processEpoch(net, state, params, 'train') ;
+      [net, state,alpha.valpha] = processEpoch(net, state, params, 'val') ;
+      if labindex == 1 && ~evaluateMode && mod(epoch,5) == 0
         saveState(modelPath(epoch), net, state) ;
         saveAlpha(modelPath(epoch), alpha);
       end
@@ -186,7 +190,7 @@ for epoch=start+1:opts.numEpochs
   stats.train(epoch) = lastStats.train ;
   stats.val(epoch) = lastStats.val ;
   clear lastStats ;
-  if ~evaluateMode && mod(epoch,5) == 0 
+  if ~evaluateMode && mod(epoch,5) == 0
     saveStats(modelPath(epoch), stats) ;
   end
 
@@ -242,6 +246,14 @@ predictions = gather(res(end-1).x) ;
 error = ~bsxfun(@eq, predictions, labels) ;
 err=sum(sum(sum(error(:,:,1,:),1),2),4) ;
 
+% -------------------------------------------------------------------------
+function err = error_CelebA_multiclass(params, labels, res)
+% -------------------------------------------------------------------------
+predictions = gather(res(end-1).x) ;
+error = bsxfun(@times, predictions, labels) <0;
+err = max(sum(sum(sum(error,1),2),4));
+
+
 
 % -------------------------------------------------------------------------
 function err = error_binary(params, labels, res)
@@ -257,7 +269,7 @@ function err = error_none(params, labels, res)
 err = zeros(0,1) ;
 
 % -------------------------------------------------------------------------
-function [net, state, alpha] = processEpoch(net, state, params, mode, ourepoch)
+function [net, state, alpha] = processEpoch(net, state, params, mode)
 % -------------------------------------------------------------------------
 % Note that net is not strictly needed as an output argument as net
 % is a handle class. However, this fixes some aliasing issue in the
@@ -316,6 +328,8 @@ negtrain=[];
 postrain=[];
 negval=[];
 posval=[];
+tdetail=[];
+vdetail=[];
 %%%%%%%%%%
 if(size(params.imdb.images.labels,1)>1)
     density=mean(params.imdb.images.labels>0,2);
@@ -364,7 +378,7 @@ for t=1:params.batchSize:numel(subset)
     net.layers{end}.iter=params.epoch;
     net.layers{end}.density=density;
     % get alpha for batch
-    batchalpha = gpuArray(params.alpha(batch));
+    batchalpha = gpuArray(params.imdb.images.alpha(batch));
     res=our_vl_simplenn(net, im, dzdy, res , batchalpha ,...
                       'accumulate', s ~= 1, ...
                       'mode', evalMode, ...
@@ -374,16 +388,13 @@ for t=1:params.batchSize:numel(subset)
                       'cudnn', params.cudnn, ...
                       'parameterServer', parserv, ...
                       'holdOn', s < params.numSubBatches) ;
-     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-     % get neg and pos sample in batch
-     if(params.epoch>=ourepoch)
-         if strcmp(mode, 'train')
-             [negtrain,postrain] = parttrain(negtrain,postrain,t,params,mode,batchSize,res,labels);
-         else
-             [negval,posval] = partval(negval,posval,t,params,mode,batchSize,res,labels);
-         end
-     end
-     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  if strcmp(mode, 'train')
+      [negtrain,postrain,tdetail] = get_img_acc(negtrain,postrain,tdetail,batch,res,labels);
+  elseif strcmp(mode, 'val')
+      [negval,posval,vdetail] = get_img_acc(negval,posval,vdetail,batch,res,labels);
+  end
+  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     % accumulate errors
     error = sum([error, [...
       sum(double(gather(res(end).x))) ;
@@ -451,12 +462,14 @@ end
 if (strcmp(mode, 'train'))
     alpha.pos = postrain;
     alpha.neg = negtrain;
+    alpha.detail = tdetail;
 end
 if (strcmp(mode, 'val'))
     alpha.pos = posval;
     alpha.neg = negval;
+    alpha.detail = vdetail;
 end
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Save back to state.
 state.stats.(mode) = stats ;
 if params.profile
@@ -482,7 +495,6 @@ else
     end
   end
 end
-
 net =our_vl_simplenn_move(net, 'cpu') ;
 
 % -------------------------------------------------------------------------
@@ -619,6 +631,7 @@ end
 function saveState(fileName, net, state)
 % -------------------------------------------------------------------------
 save(fileName, 'net', 'state') ;
+%end
 
 % -------------------------------------------------------------------------
 function saveStats(fileName, stats)
@@ -628,15 +641,7 @@ if exist(fileName)
 else
   save(fileName, 'stats') ;
 end
-
-% -------------------------------------------------------------------------
-function saveAlpha(fileName ,alpha)
-% -------------------------------------------------------------------------
-if exist(fileName)
-  save(fileName, 'alpha', '-append') ;
-else
-  save(fileName, 'alpha') ;
-end
+%end
 
 % -------------------------------------------------------------------------
 function [net, state, stats, alpha] = loadState(fileName)
@@ -646,6 +651,15 @@ net = vl_simplenn_tidy(net) ;
 if isempty(whos('stats'))
   error('Epoch ''%s'' was only partially saved. Delete this file and try again.', ...
         fileName) ;
+end
+
+% -------------------------------------------------------------------------
+function saveAlpha(fileName ,alpha)
+% -------------------------------------------------------------------------
+if exist(fileName)
+  save(fileName, 'alpha', '-append') ;
+else
+  save(fileName, 'alpha') ;
 end
 
 % -------------------------------------------------------------------------

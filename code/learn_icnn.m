@@ -26,6 +26,8 @@ else
   IsTrain=true;
   if(strcmp(Name_batch,'cub200'))
       imdb=getImdb_cub200(conf.data.Name_batch,conf,net.meta,IsTrain);
+  elseif(strcmp(Name_batch, 'CelebA'))
+      imdb=getImdb_CelebA(conf.data.Name_batch,conf,net.meta,IsTrain);
   else
       imdb=getImdb(conf.data.Name_batch,conf,net.meta,IsTrain);
   end

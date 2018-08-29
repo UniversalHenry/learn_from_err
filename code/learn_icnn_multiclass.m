@@ -12,7 +12,10 @@ else
     end
 end
 if(strcmp(Name_batch{1},'cub200'))
-    str=sprintf('%s',Name_batch{i}(1:end));
+    str=sprintf('%s',Name_batch{1}(1:end));
+end
+if(strcmp(Name_batch{1},'CelebA'))
+    str=sprintf('%s',Name_batch{1}(1:end));
 end
 conf.data.Name_batch=str;
 opts.dataDir=conf.data.imgdir;
@@ -34,6 +37,9 @@ end
 if(strcmp(Name_batch{1},'cub200'))
     labelNum = numel(GetNameBatch(conf.data.imgdir));
 end
+if(strcmp(Name_batch{1},'CelebA'))
+    labelNum = 40;
+end
 net=network_init(labelNum,model,dropoutRate,'networkType',opts.networkType);
 net.layers{end}.type=lossType;
 if(strcmp(lossType,'ourloss_softmaxlog'))
@@ -44,7 +50,7 @@ if(strcmp(lossType,'ourloss_softmaxlog'))
         end
     end
 else
-    if(labelNum>10)
+    if(labelNum>10) 
         net.meta.trainOpts.learningRate=net.meta.trainOpts.learningRate./10;
         if(strcmp(model,'vggm'))
             net.meta.trainOpts.learningRate=net.meta.trainOpts.learningRate.*2;
@@ -57,7 +63,18 @@ end
 if exist(opts.imdbPath,'file')
     imdb=load(opts.imdbPath) ;
 else
-    if(strcmp(Name_batch{1},'cub200'))
+    if (strcmp(Name_batch{1},'CelebA'))
+        filename=['./mat/',Name_batch{1},'/imdb.mat'];
+        fprintf('generating set ');
+        fprintf(Name_batch{1});
+        fprintf('(%d/%d)',1,labelNum);
+        fprintf('...');
+        fprintf('\n');
+        if(~exist(filename,'file'))
+            IsTrain=true;
+            imdb=getImdb_CelebA(Name_batch{1},conf,net.meta,IsTrain);
+        end
+    elseif (strcmp(Name_batch{1},'cub200'))
         filename=['./mat/',Name_batch{1},'/imdb.mat'];
         fprintf('generating set ');
         fprintf(Name_batch{1});
@@ -69,7 +86,7 @@ else
             imdb=getImdb_cub200(Name_batch{i},conf,net.meta,IsTrain);
         end
         fprintf('set ');
-        fprintf(Name_batch{i});
+        IsTrain=true;fprintf(Name_batch{i});
         fprintf(' generated \n');
     else
         for i=1:labelNum
@@ -94,7 +111,7 @@ else
                 fprintf(' generated \n');
             end
         end
-    imdb=produceIMDB(labelNum,net,Name_batch,conf);
+        imdb=produceIMDB(labelNum,net,Name_batch,conf);
     end
     fprintf('saving imdb...');
     mkdir(opts.expDir);
